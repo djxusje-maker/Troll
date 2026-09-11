@@ -1,4 +1,684 @@
-        notify("Invisible ON")
+--[[
+ULTIMATE UTILITY v4.2 - COMPLETE MOBILE GUI
+Keeps the original Click TP tool unchanged.
+Includes:
+- Movement: Fly, Noclip, Free Camera, Walk Speed, Jump Power, Fly Speed,
+  Invisible, Click TP
+- Target: player search/select, Fling, Anti-Fling, Spectate, Teleport,
+  Sit-on-Head Tool
+- Teleport: persistent Position 1-10 slots, teleport, rename, delete, clear
+- Server: player count, username server, low-pop, random, rejoin,
+  Save Current Server, Saved Servers, Join Saved Server, delete saved server,
+  server-number search, server browser, refresh browser
+- Animation: search, bundles, reset
+- Visuals: ESP/color, Aim Assist, aim mode/part, FOV, Kill Aura,
+  Fullbright, Anti-Lag, Reset Character
+- GUI: compact dark layout, mobile touch drag, Close + floating Reopen button,
+  resizable, saved position/size, notification queue
+- Respawn-safe feature cleanup
+]]
+
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
+local Lighting = game:GetService("Lighting")
+local CoreGui = game:GetService("CoreGui")
+
+-- STATE
+local flying, noclip, invisible, clickTeleport, freeCamera = false,false,false,false,false
+local fullbright, antiLag, killAuraEnabled = false,false,false
+local jumpPower, flySpeed, walkSpeed = 50,50,16
+
+local flyConnection, noclipConnection, walkSpeedConnection, freeCameraConnection, killAuraConnection
+local flyAttachment, flyVelocity, flyOrientation
+local freeCameraPosition
+local freeCameraYaw, freeCameraPitch = 0,0
+
+local teleportTool
+local getFirstTarget
+local sitHeadTool
+local sitHeadEnabled=false
+local sitHeadConnection
+local savedPositions = {}
+local originalCanCollide, originalTransparency = {},{}
+local originalLighting, originalGraphics = {},{}
+local originalEffects = {}
+local originalJumpPower
+
+local flingActive, flingConnection = false,nil
+local SelectedTargets, PlayerCheckboxes = {},{}
+getgenv().OldPos = nil
+getgenv().FPDH = workspace.FallenPartsDestroyHeight
+
+local antiFlingEnabled, antiFlingConnection = false,nil
+local spectating = false
+local spectateTarget = nil
+
+local highlightESP = false
+local highlightColor = Color3.fromRGB(255,0,0)
+local highlightObjects = {}
+local colorIndex = 1
+local espColors = {
+    {name="Red",color=Color3.fromRGB(255,0,0)},
+    {name="Green",color=Color3.fromRGB(0,255,0)},
+    {name="Blue",color=Color3.fromRGB(0,150,255)},
+    {name="Yellow",color=Color3.fromRGB(255,255,0)},
+    {name="Purple",color=Color3.fromRGB(150,0,255)}
+}
+
+local aimAssistEnabled, aimAssistConnection, aimTarget = false,nil,nil
+local aimSmoothness, showFOVCircle, fovCircleSize = 0.3,false,200
+local fovCircle, aimPart, aimMode = nil,"Head","Smooth"
+
+local currentAnimation = "Default"
+local AnimationBundles = {
+    "Default","Ninja","Robot","Rthro","Levitate","Mage","Stylish","Hero","Toy",
+    "Astronaut","Bubbly","Cartoony","Elder","Ghost","Knight","Vampire","Werewolf",
+    "Zombie","Bold","Adidas","Catwalk","Walmart","Wicked","NFL","Pirate",
+    "Adidas2","Oldschool","Unboxed","Aura","Wicked2","Ud","Toilet","Glow Motion"
+}
+
+local isMobile = UserInputService.TouchEnabled
+local Colors = {
+    MainBackground=Color3.fromRGB(8,8,8),
+    Sidebar=Color3.fromRGB(12,12,12),
+    Panel=Color3.fromRGB(17,17,17),
+    Button=Color3.fromRGB(22,22,22),
+    ButtonHover=Color3.fromRGB(32,32,32),
+    Selected=Color3.fromRGB(38,38,38),
+    Border=Color3.fromRGB(65,65,65),
+    Text=Color3.fromRGB(255,255,255),
+    TextSecondary=Color3.fromRGB(175,175,175),
+    ToggleOn=Color3.fromRGB(0,170,80),
+    ToggleOff=Color3.fromRGB(40,40,40)
+}
+
+-- FILE HELPERS
+local GUI_FILE = "UltimateUtility_GUI_Settings.json"
+local POS_FILE = "UltimateUtility_Positions.json"
+local SERVER_FILE = "UltimateUtility_SavedServers.json"
+
+local function hasFileAPI()
+    return typeof(readfile)=="function" and typeof(isfile)=="function"
+end
+local function hasWriteAPI()
+    return typeof(writefile)=="function"
+end
+local function readJSON(file)
+    if not hasFileAPI() or not isfile(file) then return nil end
+    local ok,data = pcall(function() return HttpService:JSONDecode(readfile(file)) end)
+    return ok and data or nil
+end
+local function writeJSON(file,data)
+    if not hasWriteAPI() then return false end
+    return pcall(function() writefile(file,HttpService:JSONEncode(data)) end)
+end
+
+local savedSettings={Size={X=360,Y=520},Position=nil}
+local guiData=readJSON(GUI_FILE)
+if type(guiData)=="table" then
+    if type(guiData.Size)=="table" then
+        savedSettings.Size.X=tonumber(guiData.Size.X) or 360
+        savedSettings.Size.Y=tonumber(guiData.Size.Y) or 520
+    end
+    if type(guiData.Position)=="table" then
+        savedSettings.Position={X=tonumber(guiData.Position.X),Y=tonumber(guiData.Position.Y)}
+    end
+end
+
+local function saveSettings()
+    writeJSON(GUI_FILE,savedSettings)
+end
+
+local old = CoreGui:FindFirstChild("UltimateUtilityGUI")
+if old then pcall(function() old:Destroy() end) end
+
+-- GUI BASE
+local ScreenGui=Instance.new("ScreenGui")
+ScreenGui.Name="UltimateUtilityGUI"
+ScreenGui.ResetOnSpawn=false
+ScreenGui.IgnoreGuiInset=true
+ScreenGui.ZIndexBehavior=Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent=CoreGui
+
+local function getCharacter() return LocalPlayer.Character end
+local function getRoot(c) return c and c:FindFirstChild("HumanoidRootPart") end
+local function getHumanoid(c) return c and c:FindFirstChildOfClass("Humanoid") end
+local function disconnect(conn)
+    if conn then pcall(function() conn:Disconnect() end) end
+    return nil
+end
+local function style(obj,radius,thickness)
+    local corner=Instance.new("UICorner")
+    corner.CornerRadius=UDim.new(0,radius or 6)
+    corner.Parent=obj
+    if thickness then
+        local stroke=Instance.new("UIStroke")
+        stroke.Thickness=thickness
+        stroke.Color=Colors.Border
+        stroke.Parent=obj
+    end
+end
+
+local ToggleBtn=Instance.new("TextButton")
+ToggleBtn.Size=UDim2.fromOffset(40,40)
+ToggleBtn.Position=UDim2.fromOffset(10,10)
+ToggleBtn.BackgroundColor3=Colors.Button
+ToggleBtn.Text="⚡"
+ToggleBtn.TextColor3=Colors.Text
+ToggleBtn.Font=Enum.Font.GothamBold
+ToggleBtn.TextSize=18
+ToggleBtn.Visible=false
+ToggleBtn.AutoButtonColor=false
+ToggleBtn.Parent=ScreenGui
+style(ToggleBtn,20,1)
+
+local Main=Instance.new("Frame")
+Main.Name="Main"
+Main.BackgroundColor3=Colors.MainBackground
+Main.BorderSizePixel=0
+Main.ClipsDescendants=true
+Main.Size=UDim2.fromOffset(
+    math.clamp(savedSettings.Size.X,300,520),
+    math.clamp(savedSettings.Size.Y,380,700)
+)
+if savedSettings.Position and savedSettings.Position.X and savedSettings.Position.Y then
+    Main.Position=UDim2.fromOffset(savedSettings.Position.X,savedSettings.Position.Y)
+else
+    Main.Position=UDim2.new(0.5,-Main.Size.X.Offset/2,0.5,-Main.Size.Y.Offset/2)
+end
+Main.Parent=ScreenGui
+style(Main,9,2)
+
+local Header=Instance.new("Frame")
+Header.BackgroundColor3=Colors.Sidebar
+Header.BorderSizePixel=0
+Header.Size=UDim2.new(1,0,0,38)
+Header.Parent=Main
+style(Header,9,0)
+
+local Title=Instance.new("TextLabel")
+Title.BackgroundTransparency=1
+Title.Text="⚡ ULTIMATE UTILITY"
+Title.TextColor3=Colors.Text
+Title.Font=Enum.Font.GothamBold
+Title.TextSize=13
+Title.TextXAlignment=Enum.TextXAlignment.Left
+Title.Position=UDim2.fromOffset(10,0)
+Title.Size=UDim2.new(1,-50,1,0)
+Title.Parent=Header
+
+local Close=Instance.new("TextButton")
+Close.BackgroundColor3=Colors.Button
+Close.BorderSizePixel=0
+Close.Text="×"
+Close.TextColor3=Colors.Text
+Close.Font=Enum.Font.GothamBold
+Close.TextSize=12
+Close.Size=UDim2.fromOffset(28,28)
+Close.Position=UDim2.new(1,-34,0,5)
+Close.AutoButtonColor=false
+Close.Parent=Header
+style(Close,12,1)
+
+local function SetGuiVisible(v)
+    Main.Visible=v
+    ToggleBtn.Visible=not v
+end
+Close.Activated:Connect(function()
+    saveSettings()
+    SetGuiVisible(false)
+end)
+ToggleBtn.Activated:Connect(function()
+    SetGuiVisible(true)
+end)
+
+-- floating button drag
+local toggleDragging,toggleStart,togglePos=false,nil,nil
+ToggleBtn.InputBegan:Connect(function(input)
+    if input.UserInputType==Enum.UserInputType.Touch or input.UserInputType==Enum.UserInputType.MouseButton1 then
+        toggleDragging=true
+        toggleStart=input.Position
+        togglePos=ToggleBtn.Position
+        input.Changed:Connect(function()
+            if input.UserInputState==Enum.UserInputState.End then
+                toggleDragging=false
+            end
+        end)
+    end
+end)
+UserInputService.InputChanged:Connect(function(input)
+    if not toggleDragging then return end
+    if input.UserInputType==Enum.UserInputType.Touch or input.UserInputType==Enum.UserInputType.MouseMovement then
+        local d=input.Position-toggleStart
+        ToggleBtn.Position=UDim2.new(togglePos.X.Scale,togglePos.X.Offset+d.X,togglePos.Y.Scale,togglePos.Y.Offset+d.Y)
+    end
+end)
+
+-- main drag
+local dragging,dragStart,startPosition=false,nil,nil
+Header.InputBegan:Connect(function(input)
+    if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then
+        dragging=true
+        dragStart=input.Position
+        startPosition=Main.Position
+        input.Changed:Connect(function()
+            if input.UserInputState==Enum.UserInputState.End then
+                dragging=false
+                savedSettings.Position={X=Main.AbsolutePosition.X,Y=Main.AbsolutePosition.Y}
+                saveSettings()
+            end
+        end)
+    end
+end)
+UserInputService.InputChanged:Connect(function(input)
+    if not dragging then return end
+    if input.UserInputType==Enum.UserInputType.MouseMovement or input.UserInputType==Enum.UserInputType.Touch then
+        local d=input.Position-dragStart
+        Main.Position=UDim2.new(startPosition.X.Scale,startPosition.X.Offset+d.X,startPosition.Y.Scale,startPosition.Y.Offset+d.Y)
+        savedSettings.Position={X=Main.AbsolutePosition.X,Y=Main.AbsolutePosition.Y}
+    end
+end)
+
+local Body=Instance.new("Frame")
+Body.BackgroundTransparency=1
+Body.Position=UDim2.fromOffset(0,38)
+Body.Size=UDim2.new(1,0,1,-38)
+Body.Parent=Main
+
+local SidebarWidth=80
+local Sidebar=Instance.new("Frame")
+Sidebar.BackgroundColor3=Colors.Sidebar
+Sidebar.BorderSizePixel=0
+Sidebar.Size=UDim2.new(0,SidebarWidth,1,0)
+Sidebar.Parent=Body
+
+local Content=Instance.new("Frame")
+Content.BackgroundColor3=Colors.Panel
+Content.BorderSizePixel=0
+Content.Position=UDim2.fromOffset(SidebarWidth,0)
+Content.Size=UDim2.new(1,-SidebarWidth,1,0)
+Content.Parent=Body
+
+local TabNames={"Movement","Target","Teleport","Server","Animation","Visuals"}
+local TabIcons={"🏃","🎯","📍","🌐","🎭","👁"}
+local Tabs,Pages={},{}
+local selectedTab="Movement"
+
+for i,name in ipairs(TabNames) do
+    local page=Instance.new("ScrollingFrame")
+    page.Name=name
+    page.BackgroundTransparency=1
+    page.BorderSizePixel=0
+    page.Size=UDim2.fromScale(1,1)
+    page.ScrollBarThickness=3
+    page.ScrollBarImageColor3=Colors.TextSecondary
+    page.AutomaticCanvasSize=Enum.AutomaticSize.Y
+    page.CanvasSize=UDim2.fromOffset(0,0)
+    page.Visible=name==selectedTab
+    page.Parent=Content
+    Pages[name]=page
+
+    local pad=Instance.new("UIPadding")
+    pad.PaddingTop=UDim.new(0,6)
+    pad.PaddingLeft=UDim.new(0,6)
+    pad.PaddingRight=UDim.new(0,6)
+    pad.PaddingBottom=UDim.new(0,6)
+    pad.Parent=page
+
+    local layout=Instance.new("UIListLayout")
+    layout.Padding=UDim.new(0,4)
+    layout.SortOrder=Enum.SortOrder.LayoutOrder
+    layout.Parent=page
+
+    local btn=Instance.new("TextButton")
+    btn.BackgroundColor3=name==selectedTab and Colors.Selected or Colors.Sidebar
+    btn.BorderSizePixel=0
+    btn.Text=""
+    btn.Size=UDim2.new(1,-8,0,38)
+    btn.Position=UDim2.fromOffset(4,6+(i-1)*42)
+    btn.Parent=Sidebar
+    style(btn,6,0)
+
+    local icon=Instance.new("TextLabel")
+    icon.BackgroundTransparency=1
+    icon.Text=TabIcons[i]
+    icon.TextColor3=Colors.Text
+    icon.Font=Enum.Font.Gotham
+    icon.TextSize=16
+    icon.Size=UDim2.fromOffset(26,38)
+    icon.Position=UDim2.fromOffset(4,0)
+    icon.Parent=btn
+
+    local label=Instance.new("TextLabel")
+    label.BackgroundTransparency=1
+    label.Text=name
+    label.TextColor3=name==selectedTab and Colors.Text or Colors.TextSecondary
+    label.Font=Enum.Font.Gotham
+    label.TextSize=9
+    label.TextXAlignment=Enum.TextXAlignment.Left
+    label.Position=UDim2.fromOffset(28,0)
+    label.Size=UDim2.new(1,-30,1,0)
+    label.Parent=btn
+    Tabs[name]={Button=btn,Label=label}
+
+    btn.Activated:Connect(function()
+        selectedTab=name
+        for n,t in pairs(Tabs) do
+            t.Button.BackgroundColor3=n==name and Colors.Selected or Colors.Sidebar
+            t.Label.TextColor3=n==name and Colors.Text or Colors.TextSecondary
+            Pages[n].Visible=n==name
+        end
+    end)
+end
+
+local function CreateButton(parent,text,callback)
+    local btn=Instance.new("TextButton")
+    btn.Size=UDim2.new(1,0,0,24)
+    btn.BackgroundColor3=Colors.Button
+    btn.Text=text
+    btn.TextColor3=Colors.Text
+    btn.Font=Enum.Font.GothamBold
+    btn.TextSize=9
+    btn.AutoButtonColor=false
+    btn.Parent=parent
+    style(btn,5,1)
+    btn.MouseEnter:Connect(function() btn.BackgroundColor3=Colors.ButtonHover end)
+    btn.MouseLeave:Connect(function() btn.BackgroundColor3=Colors.Button end)
+    btn.Activated:Connect(function() callback(btn) end)
+    return btn
+end
+
+local function CreateToggle(parent,text,callback)
+    local frame=Instance.new("Frame")
+    frame.Size=UDim2.new(1,0,0,24)
+    frame.BackgroundColor3=Colors.Panel
+    frame.Parent=parent
+    style(frame,5,1)
+
+    local lbl=Instance.new("TextLabel")
+    lbl.Size=UDim2.new(1,-46,1,0)
+    lbl.Position=UDim2.fromOffset(7,0)
+    lbl.BackgroundTransparency=1
+    lbl.Text=text
+    lbl.TextColor3=Colors.Text
+    lbl.Font=Enum.Font.Gotham
+    lbl.TextSize=9
+    lbl.TextXAlignment=Enum.TextXAlignment.Left
+    lbl.Parent=frame
+
+    local toggle=Instance.new("TextButton")
+    toggle.Size=UDim2.fromOffset(30,16)
+    toggle.Position=UDim2.new(1,-35,0.5,-8)
+    toggle.BackgroundColor3=Colors.ToggleOff
+    toggle.Text=""
+    toggle.AutoButtonColor=false
+    toggle.Parent=frame
+    style(toggle,8,1)
+
+    local knob=Instance.new("Frame")
+    knob.Size=UDim2.fromOffset(12,12)
+    knob.Position=UDim2.fromOffset(2,2)
+    knob.BackgroundColor3=Color3.fromRGB(220,220,220)
+    knob.Parent=toggle
+    style(knob,6,0)
+
+    local state=false
+    local function render()
+        toggle.BackgroundColor3=state and Colors.ToggleOn or Colors.ToggleOff
+        knob.Position=state and UDim2.new(1,-14,0,2) or UDim2.fromOffset(2,2)
+    end
+    toggle.Activated:Connect(function()
+        state=not state
+        render()
+        callback(state)
+    end)
+    frame:SetAttribute("State",false)
+    return frame,function(v)
+        state=v and true or false
+        render()
+        frame:SetAttribute("State",state)
+    end
+end
+
+local function makeLabel(parent,text)
+    local lbl=Instance.new("TextLabel")
+    lbl.Size=UDim2.new(1,0,0,14)
+    lbl.BackgroundTransparency=1
+    lbl.Text=text
+    lbl.TextColor3=Colors.TextSecondary
+    lbl.Font=Enum.Font.Gotham
+    lbl.TextSize=9
+    lbl.TextXAlignment=Enum.TextXAlignment.Left
+    lbl.Parent=parent
+    return lbl
+end
+local function makeInput(parent,defaultText,placeholder)
+    local box=Instance.new("TextBox")
+    box.Size=UDim2.new(1,0,0,22)
+    box.BackgroundColor3=Colors.Panel
+    box.Text=defaultText or ""
+    box.PlaceholderText=placeholder or ""
+    box.TextColor3=Colors.Text
+    box.PlaceholderColor3=Colors.TextSecondary
+    box.Font=Enum.Font.Gotham
+    box.TextSize=10
+    box.ClearTextOnFocus=false
+    box.Parent=parent
+    style(box,5,1)
+    return box
+end
+
+-- notification queue
+local NotificationHolder=Instance.new("Frame")
+NotificationHolder.BackgroundTransparency=1
+NotificationHolder.Size=UDim2.fromOffset(250,200)
+NotificationHolder.AnchorPoint=Vector2.new(0.5,0)
+NotificationHolder.Position=UDim2.new(0.5,0,0,8)
+NotificationHolder.Parent=ScreenGui
+local notifLayout=Instance.new("UIListLayout")
+notifLayout.Padding=UDim.new(0,4)
+notifLayout.HorizontalAlignment=Enum.HorizontalAlignment.Center
+notifLayout.VerticalAlignment=Enum.VerticalAlignment.Top
+notifLayout.Parent=NotificationHolder
+
+local function notify(text)
+    local n=Instance.new("TextLabel")
+    n.Size=UDim2.fromOffset(230,28)
+    n.BackgroundColor3=Colors.Panel
+    n.Text=text
+    n.TextColor3=Colors.Text
+    n.Font=Enum.Font.GothamBold
+    n.TextSize=10
+    n.Parent=NotificationHolder
+    style(n,6,1)
+    task.delay(2.4,function() if n.Parent then n:Destroy() end end)
+end
+
+-- MOVEMENT FUNCTIONS
+local function ApplyWalkSpeed()
+    local hum=getHumanoid(LocalPlayer.Character)
+    if hum and hum.Health>0 and not flying then hum.WalkSpeed=walkSpeed end
+end
+local function SetWalkSpeed(v)
+    v=tonumber(v)
+    if not v then return false end
+    walkSpeed=math.clamp(math.floor(v+0.5),1,500)
+    ApplyWalkSpeed()
+    return true
+end
+walkSpeedConnection=RunService.Heartbeat:Connect(function()
+    if not flying then ApplyWalkSpeed() end
+end)
+
+local function EnableNoclip()
+    noclip=true
+    noclipConnection=disconnect(noclipConnection)
+    noclipConnection=RunService.Stepped:Connect(function()
+        if not noclip then return end
+        local c=LocalPlayer.Character
+        if not c then return end
+        for _,p in ipairs(c:GetDescendants()) do
+            if p:IsA("BasePart") then
+                if originalCanCollide[p]==nil then originalCanCollide[p]=p.CanCollide end
+                p.CanCollide=false
+            end
+        end
+    end)
+    notify("◇ Noclip ON")
+end
+local function DisableNoclip()
+    noclip=false
+    noclipConnection=disconnect(noclipConnection)
+    for p,v in pairs(originalCanCollide) do if p and p.Parent then p.CanCollide=v end end
+    table.clear(originalCanCollide)
+    notify("Noclip OFF")
+end
+
+local function destroyFlyObjects()
+    if flyVelocity then flyVelocity:Destroy();flyVelocity=nil end
+    if flyOrientation then flyOrientation:Destroy();flyOrientation=nil end
+    if flyAttachment then flyAttachment:Destroy();flyAttachment=nil end
+end
+local function DisableFly(silent)
+    flying=false
+    flyConnection=disconnect(flyConnection)
+    destroyFlyObjects()
+    local hum=getHumanoid(LocalPlayer.Character)
+    if hum and hum.Health>0 then
+        hum.PlatformStand=false
+        hum.AutoRotate=true
+        hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+        hum.WalkSpeed=walkSpeed
+    end
+    if not silent then notify("Fly OFF") end
+end
+local function EnableFly()
+    DisableFly(true)
+    local c=LocalPlayer.Character
+    local hum=getHumanoid(c)
+    local root=getRoot(c)
+    if not c or not hum or not root or hum.Health<=0 then notify("Character not ready");return end
+    flying=true
+    hum.PlatformStand=true
+    hum.AutoRotate=false
+    flyAttachment=Instance.new("Attachment",root)
+    flyVelocity=Instance.new("LinearVelocity")
+    flyVelocity.Attachment0=flyAttachment
+    flyVelocity.RelativeTo=Enum.ActuatorRelativeTo.World
+    flyVelocity.VelocityConstraintMode=Enum.VelocityConstraintMode.Vector
+    flyVelocity.ForceLimitsEnabled=false
+    flyVelocity.VectorVelocity=Vector3.zero
+    flyVelocity.Parent=root
+    flyOrientation=Instance.new("AlignOrientation")
+    flyOrientation.Attachment0=flyAttachment
+    flyOrientation.Mode=Enum.OrientationAlignmentMode.OneAttachment
+    flyOrientation.RigidityEnabled=false
+    flyOrientation.Responsiveness=35
+    flyOrientation.MaxTorque=math.huge
+    flyOrientation.Parent=root
+    flyConnection=RunService.RenderStepped:Connect(function()
+        if not flying then return end
+        if LocalPlayer.Character~=c or not root.Parent or hum.Health<=0 then DisableFly(true);return end
+        local move=hum.MoveDirection
+        local flat=Vector3.new(move.X,0,move.Z)
+        local look=Camera.CFrame.LookVector
+        local right=Camera.CFrame.RightVector
+        local flatLook=Vector3.new(look.X,0,look.Z)
+        local flatRight=Vector3.new(right.X,0,right.Z)
+        flatLook=flatLook.Magnitude>.001 and flatLook.Unit or Vector3.new(0,0,-1)
+        flatRight=flatRight.Magnitude>.001 and flatRight.Unit or Vector3.new(1,0,0)
+        local desired=Vector3.zero
+        if flat.Magnitude>.03 then
+            local m=flat.Unit
+            local f=m:Dot(flatLook)
+            local r=m:Dot(flatRight)
+            desired=look*f+flatRight*r
+            if desired.Magnitude>.001 then desired=desired.Unit*math.min(flat.Magnitude,1)*flySpeed end
+        end
+        flyVelocity.VectorVelocity=desired
+        if desired.Magnitude>.05 then flyOrientation.CFrame=CFrame.lookAt(root.Position,root.Position+desired.Unit) end
+    end)
+    notify("3D Fly ON")
+end
+
+-- free camera
+local freeLookConnection,freeMoveConnection
+local function StopFreeCamera()
+    freeCamera=false
+    freeCameraConnection=disconnect(freeCameraConnection)
+    freeLookConnection=disconnect(freeLookConnection)
+    freeMoveConnection=disconnect(freeMoveConnection)
+    Camera.CameraType=Enum.CameraType.Custom
+    local hum=getHumanoid(LocalPlayer.Character)
+    if hum then Camera.CameraSubject=hum end
+    notify("Free Camera OFF")
+end
+local function StartFreeCamera()
+    if freeCamera then return end
+    freeCamera=true
+    Camera.CameraType=Enum.CameraType.Scriptable
+    local cf=Camera.CFrame
+    freeCameraPosition=cf.Position
+    local look=cf.LookVector
+    freeCameraYaw=math.atan2(-look.X,-look.Z)
+    freeCameraPitch=math.asin(math.clamp(look.Y,-1,1))
+    freeLookConnection=UserInputService.TouchMoved:Connect(function(input,gp)
+        if not freeCamera or gp then return end
+        local delta=input.Delta
+        freeCameraYaw-=delta.X*0.004
+        freeCameraPitch=math.clamp(freeCameraPitch-delta.Y*0.004,-1.45,1.45)
+    end)
+    freeCameraConnection=RunService.RenderStepped:Connect(function(dt)
+        if not freeCamera then return end
+        local rot=CFrame.Angles(0,freeCameraYaw,0)*CFrame.Angles(freeCameraPitch,0,0)
+        local lookVector=rot.LookVector
+        local rightVector=rot.RightVector
+        local hum=getHumanoid(LocalPlayer.Character)
+        local move=hum and hum.MoveDirection or Vector3.zero
+        if move.Magnitude>.03 then
+            local f=Vector3.new(lookVector.X,0,lookVector.Z)
+            local r=Vector3.new(rightVector.X,0,rightVector.Z)
+            if f.Magnitude>.01 then f=f.Unit end
+            if r.Magnitude>.01 then r=r.Unit end
+            freeCameraPosition+=((f*move.Z)+(r*move.X))*50*dt
+        end
+        Camera.CFrame=CFrame.lookAt(freeCameraPosition,freeCameraPosition+lookVector,Vector3.yAxis)
+    end)
+    notify("Free Camera ON")
+end
+
+-- INVISIBLE
+local function SetInvisible(on)
+    invisible=on
+    local c=LocalPlayer.Character
+    if not c then return end
+    if on then
+        for _,obj in ipairs(c:GetDescendants()) do
+            if obj:IsA("BasePart") or obj:IsA("Decal") or obj:IsA("Texture") then
+                if originalTransparency[obj]==nil then originalTransparency[obj]=obj.Transparency end
+                obj.Transparency=1
+            elseif obj:IsA("BillboardGui") or obj:IsA("SurfaceGui") then
+                if originalTransparency[obj]==nil then originalTransparency[obj]={Enabled=obj.Enabled} end
+                obj.Enabled=false
+            end
+        end
+        local hum=getHumanoid(c)
+        if hum then
+            originalTransparency[hum]={
+                NameDisplayDistance=hum.NameDisplayDistance,
+                HealthDisplayDistance=hum.HealthDisplayDistance,
+                DisplayDistanceType=hum.DisplayDistanceType
+            }
+            hum.NameDisplayDistance=0
+            hum.HealthDisplayDistance=0
+            hum.DisplayDistanceType=Enum.HumanoidDisplayDistanceType.None
+        end
+        notify("👻 Invisible ON")
     else
         for obj,v in pairs(originalTransparency) do
             if obj and obj.Parent then
@@ -11,7 +691,6 @@
         notify("Invisible OFF")
     end
 end
-
 -- ============================================================
 -- CLICK TP TOOL
 -- ============================================================
